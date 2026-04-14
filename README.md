@@ -130,4 +130,5 @@ By optimizing movement, we reduce idle time (and associated carbon footprint) an
 
 ---
 
-**Built with ❤️ for Global Solution Challenge 2026**
+**VenueFlow AI — Smart Venue Management**
+

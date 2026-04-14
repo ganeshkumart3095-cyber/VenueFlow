@@ -75,8 +75,9 @@ function AppContent() {
               CONTRAST: text-zinc-400 (#a1a1aa) on bg-zinc-900 (#18181b) → 6.89:1 ✓ AA
             */}
             <CardDescription className="text-zinc-400">
-              Hack2skill / Solution Challenge 2025
+              Transforming Venue Congestion into Fluid Experiences
             </CardDescription>
+
           </CardHeader>
 
           <CardContent className="grid gap-4">
