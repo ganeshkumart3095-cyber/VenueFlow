@@ -17,13 +17,5 @@
     "@typescript-eslint/no-explicit-any": "error",
     "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
     "no-console": ["warn", { "allow": ["warn", "error"] }]
-  },
-  "overrides": [
-    {
-      "files": ["src/components/ui/**/*.{ts,tsx}", "src/contexts/AuthContext.tsx"],
-      "rules": {
-        "react-refresh/only-export-components": "off"
-      }
-    }
-  ]
+  }
 }

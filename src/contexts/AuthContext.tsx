@@ -1,4 +1,4 @@
-import React, { useCallback, useContext, useEffect, useState } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import { auth, db, onAuthStateChanged, doc, getDoc, setDoc, serverTimestamp } from '../lib/firebase';
 import { User as FirebaseUser } from 'firebase/auth';
 import { seedMockData } from '../lib/mockData';
@@ -18,7 +18,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const [isAuthReady, setIsAuthReady] = useState(false);
 
-  const loginAsGuest = useCallback(() => {
+  const loginAsGuest = () => {
     setLoading(false);
     setIsAuthReady(true);
     setUser({
@@ -45,7 +45,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       name: 'Guest User',
       role: 'attendee'
     });
-  }, []);
+  };
 
   useEffect(() => {
     seedMockData(); 
@@ -53,8 +53,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let unsubscribe: () => void = () => {};
     
     const authTimeout = setTimeout(() => {
-      console.warn("Auth check timed out. Entering guest mode fallback.");
-      loginAsGuest();
+      if (loading) {
+        console.warn("Auth check timed out. Entering guest mode fallback.");
+        loginAsGuest();
+      }
     }, 2000);
 
     try {
@@ -80,7 +82,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   await setDoc(docRef, { ...newProfile, createdAt: serverTimestamp() });
                   setProfile(newProfile);
                 }
-            } catch {
+            } catch (fireError) {
                 // Non-fatal, just use user info (Firestore often offline in dev)
                 setProfile({
                     uid: user.uid,
@@ -112,7 +114,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubscribe();
       clearTimeout(authTimeout);
     };
-  }, [loginAsGuest]);
+  }, []);
 
   return (
     <AuthContext.Provider value={{ user, profile, loading, isAuthReady, loginAsGuest }}>

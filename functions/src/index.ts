@@ -209,7 +209,7 @@ export const onQueueUpdateAgentic = functions.firestore
           generatedBy: 'VenueFlow-AI-Agent'
         });
 
-        console.warn(`Agentic Task Created for Sector ${sectorId}: ${taskText}`);
+        console.log(`Agentic Task Created for Sector ${sectorId}: ${taskText}`);
       } catch (err) {
         console.error("Agentic Task Generation Failed:", err);
       }
