@@ -4,22 +4,48 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
-import { Navigation, Send, Users, Clock, AlertTriangle } from 'lucide-react';
+import { Navigation, Send, Users, Clock, AlertTriangle, MessageSquareOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { askGemini } from '@/lib/gemini';
 import { GoogleGenAI, Modality } from "@google/genai";
 import { SkeletonList, EmptyState } from './StatusUI';
-import { MessageSquareOff } from 'lucide-react';
 import VenueMap from './VenueMap';
 import { useCrowdData } from '@/hooks/useCrowdData';
 
 const ttsApiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
 const ai = ttsApiKey ? new GoogleGenAI({ apiKey: ttsApiKey }) : null;
 
+type Mode = 'map' | 'ar' | 'chat';
+type ChatMessage = { role: 'user' | 'ai'; text: string };
+
+const SIMULATION_CENTER = { lat: 33.9535, lng: -118.3392 };
+const SIMULATION_RADIUS = 0.005;
+const SIMULATION_TICK_MS = 1000;
+const CHAT_FOCUS_DELAY_MS = 100;
+const LISTEN_PREVIEW_LENGTH = 30;
+
+const getCameraErrorMessage = (error: DOMException | Error) => {
+  if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+    return 'Camera access was denied. Please enable permissions in your browser settings to use AR navigation.';
+  }
+  return 'Could not access camera. Please ensure no other app is using it.';
+};
+
+const stopVideoStream = (videoElement: HTMLVideoElement | null) => {
+  const stream = videoElement?.srcObject as MediaStream | null;
+  if (!stream) {
+    return;
+  }
+  stream.getTracks().forEach((track) => track.stop());
+  if (videoElement) {
+    videoElement.srcObject = null;
+  }
+};
+
 export default function UserApp() {
   const { queues, loading: queuesLoading } = useCrowdData();
-  const [mode, setMode] = useState<'map' | 'ar' | 'chat'>('map');
-  const [messages, setMessages] = useState<{ role: 'user' | 'ai', text: string }[]>([]);
+  const [mode, setMode] = useState<Mode>('map');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
@@ -28,24 +54,26 @@ export default function UserApp() {
   
   const chatInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const chatFocusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Simulation Logic: Move the user in a circle near the stadium
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isSimulating) {
-      let angle = 0;
-      interval = setInterval(() => {
-        const radius = 0.005; 
-        const center = { lat: 33.9535, lng: -118.3392 };
-        setSimulatedLocation({
-          lat: center.lat + Math.cos(angle) * radius,
-          lng: center.lng + Math.sin(angle) * radius
-        });
-        angle += 0.05;
-      }, 1000);
-    } 
+    if (!isSimulating) {
+      setSimulatedLocation(null);
+      return;
+    }
+
+    let angle = 0;
+    const intervalId = setInterval(() => {
+      setSimulatedLocation({
+        lat: SIMULATION_CENTER.lat + Math.cos(angle) * SIMULATION_RADIUS,
+        lng: SIMULATION_CENTER.lng + Math.sin(angle) * SIMULATION_RADIUS,
+      });
+      angle += 0.05;
+    }, SIMULATION_TICK_MS);
+
     return () => {
-      if (interval) clearInterval(interval);
+      clearInterval(intervalId);
     };
   }, [isSimulating]);
 
@@ -72,7 +100,9 @@ export default function UserApp() {
       const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
       if (base64Audio) {
         const audio = new Audio(`data:audio/wav;base64,${base64Audio}`);
-        audio.play();
+        void audio.play().catch((playError) => {
+          console.error('TTS playback error:', playError);
+        });
       }
     } catch (error) {
       console.error("TTS Error:", error);
@@ -83,37 +113,64 @@ export default function UserApp() {
 
   // FIX: Move focus into chat input when chat mode is activated
   useEffect(() => {
-    if (mode === 'chat') {
-      setTimeout(() => chatInputRef.current?.focus(), 100);
+    if (mode !== 'chat') {
+      return;
     }
+
+    chatFocusTimeoutRef.current = setTimeout(() => {
+      chatInputRef.current?.focus();
+    }, CHAT_FOCUS_DELAY_MS);
+
+    return () => {
+      if (chatFocusTimeoutRef.current) {
+        clearTimeout(chatFocusTimeoutRef.current);
+        chatFocusTimeoutRef.current = null;
+      }
+    };
   }, [mode]);
 
+  useEffect(() => {
+    return () => {
+      stopVideoStream(videoRef.current);
+    };
+  }, []);
+
   const handleSend = async () => {
-    if (!input.trim()) return;
-    const userMsg = { role: 'user' as const, text: input };
+    const messageText = input.trim();
+    if (!messageText) return;
+
+    const userMsg = { role: 'user' as const, text: messageText };
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     
-    const aiResponse = await askGemini(input);
+    const aiResponse = await askGemini(messageText);
     setMessages(prev => [...prev, { role: 'ai' as const, text: aiResponse }]);
   };
 
   const [cameraError, setCameraError] = useState<string | null>(null);
 
+  const stopAR = () => {
+    stopVideoStream(videoRef.current);
+    setCameraError(null);
+    setMode('map');
+  };
+
   const startAR = async () => {
     setMode('ar');
     setCameraError(null);
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError('Camera access is unavailable in this browser.');
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
       if (videoRef.current) videoRef.current.srcObject = stream;
     } catch (err: unknown) {
       const camErr = err as DOMException | Error;
       console.error("Camera error:", camErr);
-      if (camErr.name === 'NotAllowedError' || camErr.name === 'PermissionDeniedError') {
-        setCameraError("Camera access was denied. Please enable permissions in your browser settings to use AR navigation.");
-      } else {
-        setCameraError("Could not access camera. Please ensure no other app is using it.");
-      }
+      setCameraError(getCameraErrorMessage(camErr));
     }
   };
 
@@ -172,7 +229,7 @@ export default function UserApp() {
                   size="sm"
                   variant={isSimulating ? "destructive" : "secondary"}
                   className="h-8 text-[10px] font-bold uppercase tracking-tighter"
-                  onClick={() => setIsSimulating(!isSimulating)}
+                  onClick={() => setIsSimulating(prev => !prev)}
                 >
                   {isSimulating ? "Stop Simulation" : "Activate Live Insights"}
                 </Button>
@@ -204,7 +261,7 @@ export default function UserApp() {
                   <div className="max-w-xs space-y-4">
                     <AlertTriangle className="h-12 w-12 text-red-500 mx-auto" />
                     <p className="text-white text-sm">{cameraError}</p>
-                    <Button variant="outline" onClick={() => setMode('map')}>
+                    <Button variant="outline" onClick={stopAR}>
                       Return to Map
                     </Button>
                   </div>
@@ -239,7 +296,7 @@ export default function UserApp() {
               </div>
 
               <Button
-                onClick={() => setMode('map')}
+                onClick={stopAR}
                 className="absolute top-4 right-4 bg-zinc-900/80 hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-orange-400 focus-visible:ring-offset-2 focus-visible:ring-offset-black"
                 aria-label="Close AR Navigation and return to map"
               >
@@ -310,7 +367,7 @@ export default function UserApp() {
                           size="sm"
                           onClick={() => speakText(m.text)}
                           disabled={isSpeaking}
-                          aria-label={isSpeaking ? 'Currently speaking, please wait' : `Listen to AI response: ${m.text.slice(0, 30)}…`}
+                          aria-label={isSpeaking ? 'Currently speaking, please wait' : `Listen to AI response: ${m.text.slice(0, LISTEN_PREVIEW_LENGTH)}...`}
                           className="text-[10px] h-6 mt-1 text-zinc-500 hover:text-orange-500 focus-visible:ring-2 focus-visible:ring-orange-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
                         >
                           {isSpeaking ? "Speaking..." : "Listen"}

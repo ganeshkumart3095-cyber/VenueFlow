@@ -3,13 +3,12 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { MessageSquare, CheckCircle2, AlertCircle, TrendingUp } from 'lucide-react';
+import { MessageSquare, CheckCircle2, AlertCircle, TrendingUp, Inbox } from 'lucide-react';
 import { db, collection, onSnapshot, query, orderBy, limit, addDoc, serverTimestamp, updateDoc, doc, where } from '@/lib/firebase';
 import { getCrowdPrediction } from '@/lib/gemini';
 import { toast } from 'sonner';
 import { Input } from '@/components/ui/input';
 import { SkeletonHeatmap, EmptyState } from './StatusUI';
-import { Inbox } from 'lucide-react';
 import { useReducedMotion } from 'motion/react';
 import { StaffTask } from '@/types';
 
@@ -20,13 +19,44 @@ const getDensityLabel = (density: number) => {
   return 'low';
 };
 
+interface Prediction {
+  sectorId: string;
+  predictedDensity: number;
+  recommendation: string;
+}
+
+interface StaffMessage {
+  id: string;
+  senderName: string;
+  text: string;
+  channel: string;
+}
+
+const HEATMAP_SECTOR_IDS = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8'];
+const HEATMAP_FALLBACK_DENSITY: Record<string, number> = {
+  S1: 35,
+  S2: 48,
+  S3: 72,
+  S4: 26,
+  S5: 18,
+  S6: 57,
+  S7: 64,
+  S8: 42,
+};
+
+const getHeatmapDensity = (sectorId: string, predictions: Prediction[]) => {
+  const prediction = predictions.find((p) => p.sectorId === sectorId);
+  if (prediction) {
+    return prediction.predictedDensity;
+  }
+  return HEATMAP_FALLBACK_DENSITY[sectorId] ?? 20;
+};
+
 import { useCrowdData } from '@/hooks/useCrowdData';
 
 function StaffDashboard() {
   const shouldReduceMotion = useReducedMotion();
   const { sectors } = useCrowdData();
-  interface Prediction { sectorId: string; predictedDensity: number; recommendation: string; }
-  interface StaffMessage { id: string; senderName: string; text: string; channel: string; }
 
   const [tasks, setTasks] = useState<StaffTask[]>([]);
   const [messages, setMessages] = useState<StaffMessage[]>([]);
@@ -42,6 +72,7 @@ function StaffDashboard() {
   const chatInputRef = useRef<HTMLInputElement>(null);
   // FIX: chat message ref so new messages are announced
   const [chatValue, setChatValue] = useState('');
+  const pendingTaskCount = tasks.filter((t) => t.status === 'pending').length;
 
   useEffect(() => {
     const tasksQ = query(collection(db, 'tasks'), orderBy('createdAt', 'desc'), limit(20));
@@ -62,40 +93,54 @@ function StaffDashboard() {
 
   const runAIPrediction = async () => {
     setLoading(true);
-    const mockData = {
-      venueId: 'stadium-main',
-      currentDensity: [
-        { sectorId: 'S1', density: 85 },
-        { sectorId: 'S2', density: 40 },
-        { sectorId: 'S3', density: 92 },
-        { sectorId: 'S4', density: 20 },
-      ]
-    };
+    try {
+      const mockData = {
+        venueId: 'stadium-main',
+        currentDensity: [
+          { sectorId: 'S1', density: 85 },
+          { sectorId: 'S2', density: 40 },
+          { sectorId: 'S3', density: 92 },
+          { sectorId: 'S4', density: 20 },
+        ],
+      };
 
-    const result = await getCrowdPrediction(mockData);
-    if (result?.predictions) {
+      const result = await getCrowdPrediction(mockData);
+      if (!result?.predictions) {
+        return;
+      }
+
       setPredictions(result.predictions);
-      toast.success("AI Crowd Prediction Updated");
-      
-      for (const pred of result.predictions) {
-        if (pred.predictedDensity > 80) {
-          await addDoc(collection(db, 'tasks'), {
+      toast.success('AI Crowd Prediction Updated');
+
+      const highRiskSectors = result.predictions.filter((pred) => pred.predictedDensity > 80);
+      await Promise.all(
+        highRiskSectors.map((pred) =>
+          addDoc(collection(db, 'tasks'), {
             description: `AI ALERT: High density predicted in ${pred.sectorId}. ${pred.recommendation}`,
             location: pred.sectorId,
             priority: 'high',
             status: 'pending',
             assignedTo: 'auto-agent',
-            createdAt: serverTimestamp()
-          });
-        }
-      }
+            createdAt: serverTimestamp(),
+          })
+        )
+      );
+    } catch (error) {
+      console.error('Prediction execution error:', error);
+      toast.error('AI crowd prediction failed. Please retry.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const completeTask = async (taskId: string) => {
-    await updateDoc(doc(db, 'tasks', taskId), { status: 'completed' });
-    toast.success("Task completed");
+    try {
+      await updateDoc(doc(db, 'tasks', taskId), { status: 'completed' });
+      toast.success('Task completed');
+    } catch (error) {
+      console.error('Task completion error:', error);
+      toast.error('Could not complete task. Please try again.');
+    }
   };
 
   return (
@@ -145,9 +190,8 @@ function StaffDashboard() {
               aria-describedby="heatmap-desc"
             >
               {predictions.length > 0 ? (
-                ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8'].map((s) => {
-                  const pred = predictions.find(p => p.sectorId === s);
-                  const density = pred ? pred.predictedDensity : Math.floor(Math.random() * 100);
+                HEATMAP_SECTOR_IDS.map((s) => {
+                  const density = getHeatmapDensity(s, predictions);
                   const densityLevel = getDensityLabel(density);
                   const bgColor = density > 80 ? '#ef4444' : density > 50 ? '#f59e0b' : '#22c55e';
 
@@ -272,9 +316,9 @@ function StaffDashboard() {
                 className="bg-orange-500/10 text-orange-500 border-orange-500/20"
                 aria-live="polite"
                 aria-atomic="true"
-                aria-label={`${tasks.filter(t => t.status === 'pending').length} active tasks`}
+                aria-label={`${pendingTaskCount} active tasks`}
               >
-                {tasks.filter(t => t.status === 'pending').length} Active
+                {pendingTaskCount} Active
               </Badge>
             </div>
           </CardHeader>
