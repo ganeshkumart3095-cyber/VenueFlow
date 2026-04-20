@@ -1,7 +1,7 @@
 name: Quality Gate
 
-'on':
-  pull_request: {}
+on:
+  pull_request:
   push:
     branches:
       - main
@@ -12,6 +12,7 @@ jobs:
     name: Lint, Coverage, and Duplication
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
